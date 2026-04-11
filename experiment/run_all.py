@@ -2,15 +2,15 @@
 
 import argparse
 import sys
-from .config import baseline_config, piv_config, pvwo_minus_h_config, gated_config
+from .config import baseline_config, postnorm_config, postnorm_pvh_config, postnorm_pvh_full_config
 from .train import train
 
 
 VARIANT_CONFIGS = {
     "baseline": baseline_config,
-    "piv": piv_config,
-    "pvwo_minus_h": pvwo_minus_h_config,
-    "gated": gated_config,
+    "postnorm": postnorm_config,
+    "postnorm_pvh": postnorm_pvh_config,
+    "postnorm_pvh_full": postnorm_pvh_full_config,
 }
 
 

@@ -28,18 +28,18 @@ def collect_diagnostics(
         elif "token_norm" in key:
             metrics[f"diag/{key}"] = val.item()
 
-        elif "tau" in key:
+        elif "eta_attn" in key:
+            layer = key.split("/")[0]
+            metrics[f"diag/{layer}/eta_attn"] = val if isinstance(val, float) else val.item()
+
+        elif "eta_ffn" in key:
+            layer = key.split("/")[0]
+            metrics[f"diag/{layer}/eta_ffn"] = val if isinstance(val, float) else val.item()
+
+        elif "tau" in key and "eta" not in key:
             layer = key.split("/")[0]
             for h_idx, t in enumerate(val):
                 metrics[f"diag/{layer}/head{h_idx}/tau"] = t.item()
-
-        elif "eta" in key:
-            layer = key.split("/")[0]
-            metrics[f"diag/{layer}/eta"] = val.item()
-
-        elif "alpha" in key:
-            layer = key.split("/")[0]
-            metrics[f"diag/{layer}/alpha"] = val.item()
 
     return metrics
 
@@ -83,10 +83,16 @@ def collect_value_hidden_alignment(
     metrics = {}
     for i, block in enumerate(model.blocks):
         h_before = h  # residual stream before this layer
-        h_normed = block.attn_norm(h)
 
-        # Compute V = h_normed @ W_V
-        qkv = block.attn.W_qkv(h_normed)
+        # For Pre-LN (baseline), Q/K/V are derived from normed h
+        # For Post-Norm variants, Q/K/V are derived from raw h
+        if block.mode == "baseline":
+            attn_input = block.attn_norm(h)
+        else:
+            attn_input = h
+
+        # Compute V = attn_input @ W_V
+        qkv = block.attn.W_qkv(attn_input)
         _, _, v = qkv.split(config.d_model, dim=-1)
 
         # V @ W_O

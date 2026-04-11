@@ -29,10 +29,15 @@ class FeedForward(nn.Module):
 
 
 class CausalSelfAttention(nn.Module):
+    """Standard multi-head causal self-attention with optional QK-Norm.
+
+    Always outputs PV·W_O. Residual connection strategy is handled by
+    TransformerBlock, not here.
+    """
+
     def __init__(self, config: ExperimentConfig):
         super().__init__()
         self.config = config
-        self.mode = config.attn_output_mode
         d = config.d_model
         self.n_heads = config.n_heads
         self.d_head = config.d_head
@@ -42,33 +47,27 @@ class CausalSelfAttention(nn.Module):
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
 
-        # QK-Norm: learnable log-temperature per head
+        # QK-Norm: RMSNorm applied to Q and K (per d_head dimension)
         if config.qk_norm:
+            self.q_norm = RMSNorm(config.d_head)
+            self.k_norm = RMSNorm(config.d_head)
+            # Learnable temperature per head
+            # RMSNorm makes ||q||=||k||=√d_head, so Q·K^T max = d_head.
+            # Fixed 1/√d_head would cap logits at √d_head ≈ 8, too flat.
+            # Instead, learn τ per head. Init at 1/√d_head for stable start.
             self.log_tau = nn.Parameter(
-                torch.full((config.n_heads,), config.log_tau_init)
+                torch.full((config.n_heads,), math.log(1.0 / math.sqrt(config.d_head)))
             )
-
-        # pvwo_minus_h: learnable eta per layer
-        if self.mode == "pvwo_minus_h":
-            # sigmoid^{-1}(eta_init)
-            raw = math.log(config.eta_init / (1.0 - config.eta_init))
-            self.raw_eta = nn.Parameter(torch.tensor(raw))
-
-        # gated: learnable alpha per layer
-        if self.mode == "gated":
-            raw = math.log(config.gate_init / (1.0 - config.gate_init))
-            self.raw_alpha = nn.Parameter(torch.tensor(raw))
 
     def forward(
         self,
-        h_normed: torch.Tensor,
-        h_residual: torch.Tensor | None = None,
+        x: torch.Tensor,
         return_diagnostics: bool = False,
     ) -> tuple[torch.Tensor, dict]:
-        B, T, D = h_normed.shape
+        B, T, D = x.shape
 
         # QKV projection
-        qkv = self.W_qkv(h_normed)
+        qkv = self.W_qkv(x)
         q, k, v = qkv.split(D, dim=-1)
 
         # Reshape to (B, n_heads, T, d_head)
@@ -76,10 +75,10 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
         v = v.view(B, T, self.n_heads, self.d_head).transpose(1, 2)
 
-        # QK-Norm: L2 normalize + learnable temperature
+        # QK-Norm: RMSNorm on Q and K + learnable temperature
         if self.config.qk_norm:
-            q = F.normalize(q, dim=-1)
-            k = F.normalize(k, dim=-1)
+            q = self.q_norm(q)
+            k = self.k_norm(k)
             tau = self.log_tau.exp()  # (n_heads,)
             scale = tau.view(1, self.n_heads, 1, 1)
         else:
@@ -94,39 +93,10 @@ class CausalSelfAttention(nn.Module):
         P = F.softmax(scores, dim=-1)
         P = self.attn_dropout(P)
 
-        # PV: (B, n_heads, T, d_head)
+        # PV → W_O
         pv = P @ v
-
-        # --- Switchable attention output ---
-        if self.mode == "baseline":
-            # Standard: output = PV @ W_O
-            out = pv.transpose(1, 2).contiguous().view(B, T, D)
-            out = self.W_o(out)
-
-        elif self.mode == "piv":
-            # (P-I)V = PV - V, then project
-            piv = pv - v
-            out = piv.transpose(1, 2).contiguous().view(B, T, D)
-            out = self.W_o(out)
-
-        elif self.mode == "pvwo_minus_h":
-            # eta * (PVW_O - h_residual)
-            pv_wo = self.W_o(pv.transpose(1, 2).contiguous().view(B, T, D))
-            eta = torch.sigmoid(self.raw_eta)
-            out = eta * (pv_wo - h_residual)
-
-        elif self.mode == "gated":
-            # PVW_O - alpha * VW_O
-            pv_flat = pv.transpose(1, 2).contiguous().view(B, T, D)
-            v_flat = v.transpose(1, 2).contiguous().view(B, T, D)
-            pv_wo = self.W_o(pv_flat)
-            v_wo = self.W_o(v_flat)
-            alpha = torch.sigmoid(self.raw_alpha)
-            out = pv_wo - alpha * v_wo
-
-        else:
-            raise ValueError(f"Unknown mode: {self.mode}")
-
+        out = pv.transpose(1, 2).contiguous().view(B, T, D)
+        out = self.W_o(out)
         out = self.resid_dropout(out)
 
         diagnostics = {}
@@ -140,37 +110,89 @@ class CausalSelfAttention(nn.Module):
                 if self.config.qk_norm:
                     diagnostics["tau"] = tau.detach()
 
-                if self.mode == "pvwo_minus_h":
-                    diagnostics["eta"] = torch.sigmoid(self.raw_eta).detach()
-                elif self.mode == "gated":
-                    diagnostics["alpha"] = torch.sigmoid(self.raw_alpha).detach()
-
         return out, diagnostics
 
 
 class TransformerBlock(nn.Module):
     def __init__(self, config: ExperimentConfig):
         super().__init__()
-        self.attn_norm = RMSNorm(config.d_model)
+        self.mode = config.attn_output_mode
         self.attn = CausalSelfAttention(config)
-        self.ff_norm = RMSNorm(config.d_model)
         self.ff = FeedForward(config)
+
+        if self.mode == "baseline":
+            # Pre-LN: norm before sublayer
+            self.attn_norm = RMSNorm(config.d_model)
+            self.ff_norm = RMSNorm(config.d_model)
+        elif self.mode in ("postnorm", "postnorm_pvh", "postnorm_pvh_full"):
+            # Post-Norm: norm after residual
+            self.attn_norm = RMSNorm(config.d_model)
+            self.ff_norm = RMSNorm(config.d_model)
+            # ReZero: learnable scalars initialized to 0
+            self.eta_attn = nn.Parameter(torch.zeros(1))
+            self.eta_ffn = nn.Parameter(torch.zeros(1))
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
 
     def forward(
         self, h: torch.Tensor, return_diagnostics: bool = False
     ) -> tuple[torch.Tensor, dict]:
-        # Pre-LN: norm → attn → residual
-        h_normed = self.attn_norm(h)
-        attn_out, diag = self.attn(
-            h_normed, h_residual=h, return_diagnostics=return_diagnostics
-        )
-        h = h + attn_out
 
-        # Pre-LN: norm → ff → residual
-        h = h + self.ff(self.ff_norm(h))
+        if self.mode == "baseline":
+            # ── Pre-LN ──
+            # h → RMSNorm → Attn → +residual
+            h_normed = self.attn_norm(h)
+            attn_out, diag = self.attn(
+                h_normed, return_diagnostics=return_diagnostics
+            )
+            h = h + attn_out
+
+            # h → RMSNorm → FFN → +residual
+            h = h + self.ff(self.ff_norm(h))
+
+        elif self.mode == "postnorm":
+            # ── Post-Norm with ReZero ──
+            # H_{l+1} = RMSNorm(H_l + η · PVW_O)
+            attn_out, diag = self.attn(
+                h, return_diagnostics=return_diagnostics
+            )
+            h = self.attn_norm(h + self.eta_attn * attn_out)
+
+            # FFN: same ReZero Post-Norm
+            h = self.ff_norm(h + self.eta_ffn * self.ff(h))
+
+        elif self.mode == "postnorm_pvh":
+            # ── Post-Norm with LERP(Attn) + ReZero ──
+            # H_{l+1} = RMSNorm((1 - η) · H_l + η · PVW_O)
+            attn_out, diag = self.attn(
+                h, return_diagnostics=return_diagnostics
+            )
+            eta_a = self.eta_attn
+            h = self.attn_norm((1 - eta_a) * h + eta_a * attn_out)
+
+            # FFN: standard ReZero Post-Norm (no LERP)
+            h = self.ff_norm(h + self.eta_ffn * self.ff(h))
+
+        elif self.mode == "postnorm_pvh_full":
+            # ── Post-Norm with LERP(Attn + FFN) + ReZero ──
+            # Attn: H = RMSNorm((1 - η_a) · H + η_a · PVW_O)
+            # FFN:  H = RMSNorm((1 - η_f) · H + η_f · FFN(H))
+            attn_out, diag = self.attn(
+                h, return_diagnostics=return_diagnostics
+            )
+            eta_a = self.eta_attn
+            h = self.attn_norm((1 - eta_a) * h + eta_a * attn_out)
+
+            # FFN도 LERP: 현재 위치와 FFN target 사이 보간 → 구면 retraction
+            ff_out = self.ff(h)
+            eta_f = self.eta_ffn
+            h = self.ff_norm((1 - eta_f) * h + eta_f * ff_out)
 
         if return_diagnostics:
             diag["token_norm"] = h.detach().norm(dim=-1).mean()
+            if self.mode in ("postnorm", "postnorm_pvh", "postnorm_pvh_full"):
+                diag["eta_attn"] = self.eta_attn.detach().item()
+                diag["eta_ffn"] = self.eta_ffn.detach().item()
 
         return h, diag
 
@@ -182,6 +204,7 @@ class GPTQKNorm(nn.Module):
 
         self.tok_emb = nn.Embedding(config.vocab_size, config.d_model)
         self.pos_emb = nn.Embedding(config.max_seq_len, config.d_model)
+        self.emb_norm = RMSNorm(config.d_model)  # project onto hypersphere before block 0
         self.drop = nn.Dropout(config.dropout)
 
         self.blocks = nn.ModuleList(
@@ -213,7 +236,9 @@ class GPTQKNorm(nn.Module):
         assert T <= self.config.max_seq_len
 
         pos = torch.arange(T, device=input_ids.device)
-        h = self.drop(self.tok_emb(input_ids) + self.pos_emb(pos))
+        h = self.tok_emb(input_ids) + self.pos_emb(pos)
+        h = self.emb_norm(h)   # onto hypersphere before first block
+        h = self.drop(h)
 
         all_diag = {}
         for i, block in enumerate(self.blocks):

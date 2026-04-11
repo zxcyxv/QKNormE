@@ -5,7 +5,7 @@ import math
 @dataclass
 class ExperimentConfig:
     # --- Variant ---
-    attn_output_mode: str = "baseline"  # baseline, piv, pvwo_minus_h, gated
+    attn_output_mode: str = "baseline"  # baseline, postnorm, postnorm_pvh
 
     # --- Model ---
     d_model: int = 256
@@ -18,11 +18,6 @@ class ExperimentConfig:
 
     # --- QK-Norm ---
     qk_norm: bool = True
-    log_tau_init: float = field(default_factory=lambda: math.log(1.0 / math.sqrt(64)))
-
-    # --- Variant-specific ---
-    eta_init: float = 0.1       # pvwo_minus_h: initial interpolation strength
-    gate_init: float = 0.007    # gated: initial alpha (near 0 = near baseline)
 
     # --- Training ---
     batch_size: int = 16
@@ -56,13 +51,13 @@ def baseline_config(**overrides) -> ExperimentConfig:
     return ExperimentConfig(attn_output_mode="baseline", **overrides)
 
 
-def piv_config(**overrides) -> ExperimentConfig:
-    return ExperimentConfig(attn_output_mode="piv", **overrides)
+def postnorm_config(**overrides) -> ExperimentConfig:
+    return ExperimentConfig(attn_output_mode="postnorm", **overrides)
 
 
-def pvwo_minus_h_config(**overrides) -> ExperimentConfig:
-    return ExperimentConfig(attn_output_mode="pvwo_minus_h", **overrides)
+def postnorm_pvh_config(**overrides) -> ExperimentConfig:
+    return ExperimentConfig(attn_output_mode="postnorm_pvh", **overrides)
 
 
-def gated_config(**overrides) -> ExperimentConfig:
-    return ExperimentConfig(attn_output_mode="gated", **overrides)
+def postnorm_pvh_full_config(**overrides) -> ExperimentConfig:
+    return ExperimentConfig(attn_output_mode="postnorm_pvh_full", **overrides)

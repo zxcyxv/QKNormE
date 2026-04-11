@@ -199,7 +199,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--variant", default="baseline", choices=["baseline", "piv", "pvwo_minus_h", "gated"])
+    parser.add_argument("--variant", default="baseline", choices=["baseline", "postnorm", "postnorm_pvh", "postnorm_pvh_full"])
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
@@ -218,13 +218,13 @@ if __name__ == "__main__":
     if args.grad_accum is not None:
         overrides["grad_accum_steps"] = args.grad_accum
 
-    from .config import baseline_config, piv_config, pvwo_minus_h_config, gated_config
+    from .config import baseline_config, postnorm_config, postnorm_pvh_config, postnorm_pvh_full_config
 
     configs = {
         "baseline": baseline_config,
-        "piv": piv_config,
-        "pvwo_minus_h": pvwo_minus_h_config,
-        "gated": gated_config,
+        "postnorm": postnorm_config,
+        "postnorm_pvh": postnorm_pvh_config,
+        "postnorm_pvh_full": postnorm_pvh_full_config,
     }
 
     config = configs[args.variant](**overrides)
