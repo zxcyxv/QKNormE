@@ -85,7 +85,7 @@ def collect_value_hidden_alignment(
         h_before = h  # residual stream before this layer
 
         # For Pre-LN (baseline), Q/K/V are derived from normed h
-        # For Post-Norm variants, Q/K/V are derived from raw h
+        # For ReZero variants, Q/K/V are derived from raw h
         if block.mode == "baseline":
             attn_input = block.attn_norm(h)
         else:

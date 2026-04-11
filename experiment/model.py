@@ -124,11 +124,8 @@ class TransformerBlock(nn.Module):
             # Pre-LN: norm before sublayer
             self.attn_norm = RMSNorm(config.d_model)
             self.ff_norm = RMSNorm(config.d_model)
-        elif self.mode in ("postnorm", "postnorm_pvh", "postnorm_pvh_full"):
-            # Post-Norm: norm after residual
-            self.attn_norm = RMSNorm(config.d_model)
-            self.ff_norm = RMSNorm(config.d_model)
-            # ReZero: learnable scalars initialized to 0
+        elif self.mode in ("rezero", "rezero_pvh"):
+            # Pure ReZero: no norms in block, η init=0 → Jacobian = I
             self.eta_attn = nn.Parameter(torch.zeros(1))
             self.eta_ffn = nn.Parameter(torch.zeros(1))
         else:
@@ -140,57 +137,33 @@ class TransformerBlock(nn.Module):
 
         if self.mode == "baseline":
             # ── Pre-LN ──
-            # h → RMSNorm → Attn → +residual
             h_normed = self.attn_norm(h)
             attn_out, diag = self.attn(
                 h_normed, return_diagnostics=return_diagnostics
             )
             h = h + attn_out
-
-            # h → RMSNorm → FFN → +residual
             h = h + self.ff(self.ff_norm(h))
 
-        elif self.mode == "postnorm":
-            # ── Post-Norm with ReZero ──
-            # H_{l+1} = RMSNorm(H_l + η · PVW_O)
+        elif self.mode == "rezero":
+            # ── ReZero: H + η · PVW_O ──
             attn_out, diag = self.attn(
                 h, return_diagnostics=return_diagnostics
             )
-            h = self.attn_norm(h + self.eta_attn * attn_out)
+            h = h + self.eta_attn * attn_out
+            h = h + self.eta_ffn * self.ff(h)
 
-            # FFN: same ReZero Post-Norm
-            h = self.ff_norm(h + self.eta_ffn * self.ff(h))
-
-        elif self.mode == "postnorm_pvh":
-            # ── Post-Norm with LERP(Attn) + ReZero ──
-            # H_{l+1} = RMSNorm((1 - η) · H_l + η · PVW_O)
+        elif self.mode == "rezero_pvh":
+            # ── ReZero + Mean-Shift: H + η · (PVW_O - H) = (1-η)H + η·PVW_O ──
+            # dH/dH = I at η=0, perfect identity mapping
             attn_out, diag = self.attn(
                 h, return_diagnostics=return_diagnostics
             )
-            eta_a = self.eta_attn
-            h = self.attn_norm((1 - eta_a) * h + eta_a * attn_out)
-
-            # FFN: standard ReZero Post-Norm (no LERP)
-            h = self.ff_norm(h + self.eta_ffn * self.ff(h))
-
-        elif self.mode == "postnorm_pvh_full":
-            # ── Post-Norm with LERP(Attn + FFN) + ReZero ──
-            # Attn: H = RMSNorm((1 - η_a) · H + η_a · PVW_O)
-            # FFN:  H = RMSNorm((1 - η_f) · H + η_f · FFN(H))
-            attn_out, diag = self.attn(
-                h, return_diagnostics=return_diagnostics
-            )
-            eta_a = self.eta_attn
-            h = self.attn_norm((1 - eta_a) * h + eta_a * attn_out)
-
-            # FFN도 LERP: 현재 위치와 FFN target 사이 보간 → 구면 retraction
-            ff_out = self.ff(h)
-            eta_f = self.eta_ffn
-            h = self.ff_norm((1 - eta_f) * h + eta_f * ff_out)
+            h = (1 - self.eta_attn) * h + self.eta_attn * attn_out
+            h = h + self.eta_ffn * self.ff(h)
 
         if return_diagnostics:
             diag["token_norm"] = h.detach().norm(dim=-1).mean()
-            if self.mode in ("postnorm", "postnorm_pvh", "postnorm_pvh_full"):
+            if self.mode in ("rezero", "rezero_pvh"):
                 diag["eta_attn"] = self.eta_attn.detach().item()
                 diag["eta_ffn"] = self.eta_ffn.detach().item()
 

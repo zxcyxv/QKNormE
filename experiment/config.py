@@ -5,7 +5,7 @@ import math
 @dataclass
 class ExperimentConfig:
     # --- Variant ---
-    attn_output_mode: str = "baseline"  # baseline, postnorm, postnorm_pvh
+    attn_output_mode: str = "baseline"  # baseline, rezero, rezero_pvh
 
     # --- Model ---
     d_model: int = 256
@@ -51,13 +51,9 @@ def baseline_config(**overrides) -> ExperimentConfig:
     return ExperimentConfig(attn_output_mode="baseline", **overrides)
 
 
-def postnorm_config(**overrides) -> ExperimentConfig:
-    return ExperimentConfig(attn_output_mode="postnorm", **overrides)
+def rezero_config(**overrides) -> ExperimentConfig:
+    return ExperimentConfig(attn_output_mode="rezero", **overrides)
 
 
-def postnorm_pvh_config(**overrides) -> ExperimentConfig:
-    return ExperimentConfig(attn_output_mode="postnorm_pvh", **overrides)
-
-
-def postnorm_pvh_full_config(**overrides) -> ExperimentConfig:
-    return ExperimentConfig(attn_output_mode="postnorm_pvh_full", **overrides)
+def rezero_pvh_config(**overrides) -> ExperimentConfig:
+    return ExperimentConfig(attn_output_mode="rezero_pvh", **overrides)

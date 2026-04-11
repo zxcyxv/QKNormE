@@ -1,16 +1,15 @@
-"""Run all 4 attention output variants sequentially."""
+"""Run all attention output variants sequentially."""
 
 import argparse
 import sys
-from .config import baseline_config, postnorm_config, postnorm_pvh_config, postnorm_pvh_full_config
+from .config import baseline_config, rezero_config, rezero_pvh_config
 from .train import train
 
 
 VARIANT_CONFIGS = {
     "baseline": baseline_config,
-    "postnorm": postnorm_config,
-    "postnorm_pvh": postnorm_pvh_config,
-    "postnorm_pvh_full": postnorm_pvh_full_config,
+    "rezero": rezero_config,
+    "rezero_pvh": rezero_pvh_config,
 }
 
 
