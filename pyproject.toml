@@ -1,7 +1,7 @@
 [project]
 name = "qknormgaussian"
 version = "0.1.0"
-description = "Add your description here"
+description = "Research code and wiki for QK-Norm Transformer residual geometry experiments"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

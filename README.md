@@ -1,112 +1,211 @@
-# QK‑Norm 트랜스포머 연구 및 실험
+# QK-Norm Gaussian: 트랜스포머 잔차 연결의 기하학 연구
 
-## 개요
-QK‑Norm은 트랜스포머에서 쿼리 \(Q\)와 키 \(K\) 벡터를 RMSNorm으로 정규화한 후, 각 헤드마다 학습 가능한 온도 \(\tau\)를 곱하여 어텐션 스코어를 계산하는 방법입니다. 이 저장소는 QK‑Norm의 동역학과 잔차 연결이 갖는 기하학적 의미를 조사하는 연구 프로젝트로, 다음과 같은 세 가지 축으로 구성됩니다.
+QK-Norm Gaussian은 QK-Norm이 트랜스포머 attention의 기하학적 해석을 어떻게 바꾸는지, 그리고 그 해석이 잔차 연결(residual connection)의 다른 설계를 제안하는지 탐구하는 연구용 코드베이스입니다.
 
-- **실험 코드** – PyTorch를 사용해 baseline(Pre‑LN), ReZero, ReZero+PVH(Mean‑Shift) 등 다양한 잔차 연결 변형을 구현한 GPT 모델을 제공합니다. 모델은 RMSNorm, causal self‑attention, FeedForward 블록으로 구성되고, 마지막에는 RMSNorm과 weight tying을 사용합니다
-- **연구 위키** – 수학 논문 요약과 개념 정리를 LLM이 관리하는 위키로 유지합니다. RAG 방식이 아닌 **지속적인(compounding) 위키**를 추구하여, 원본 자료를 읽고 요약·교차참조한 결과를 별도의 Markdown 페이지로 축적합니다
-- **보고서 생성** – `report.py` 스크립트는 위키와 원본 자료를 바탕으로 ChatGPT에게 연구 보고서를 요청하고, PDF나 파일을 벡터 스토어에 업로드하여 인용 검색을 수행합니다. 환경변수 `OPENAI_API_KEY`가 필요합니다.
+이 프로젝트는 세 부분으로 구성됩니다.
 
-이 문서는 위 저장소의 구조와 사용 방법을 정리하여, 프로젝트를 처음 접하는 연구자나 학생이 쉽게 활용할 수 있도록 돕습니다.
+- QK-Norm Transformer 변형을 비교하는 PyTorch 실험 코드
+- 논문 요약, 개념 정리, 보고서를 누적하는 Markdown 연구 위키
+- 로컬 위키와 원본 PDF를 활용해 연구 보고서를 생성하는 OpenAI Responses API 스크립트
+
+중심 질문은 다음입니다.
+
+> QK-Norm으로 attention weight를 Gaussian/von Mises-Fisher kernel weight처럼 해석할 수 있다면, attention 출력은 잔차에 더할 변위(displacement)가 아니라 barycentric target으로 보아야 하는가?
+
+최종 결론은 보수적입니다. QK-Norm의 kernel 해석은 유용하지만, 그것만으로 표준 residual attention이 수학적으로 틀렸다고 결론낼 수는 없습니다. 더 강한 주장을 하려면 일반 Transformer가 만족하지 않는 추가 전제가 필요합니다.
 
 ## 저장소 구조
 
-프로젝트의 최상위 디렉터리에는 다음과 같은 폴더와 파일이 있습니다:
+```text
+experiment/
+  config.py        실험 하이퍼파라미터와 variant 생성 함수
+  data.py          Wikitext-103 토크나이징, chunking, 캐싱
+  metrics.py       attention entropy, gradient norm, tau/eta, alignment 지표
+  model.py         QK-Norm GPT 모델과 잔차 연결 변형
+  run_all.py       모든 variant 순차 실행 스크립트
+  train.py         학습 루프, 평가, 로그, 체크포인트 저장
 
-- **experiment/** – QK‑Norm 실험 코드. `config.py`는 모델·학습 하이퍼파라미터를 정의하고, `model.py`는 RMSNorm과 QK‑Norm을 적용한 GPT 아키텍처와 baseline/ReZero/Mean‑Shift 잔차 연결을 구현합니다【657791195259236†L4-L34】【149495967253351†L137-L156】. `data.py`는 Wikitext‑103 데이터를 토크나이즈하고 캐싱하며 데이터로더를 준비합니다. `train.py`는 학습 루프와 로그 저장, `metrics.py`는 어텐션 엔트로피·gradient norm·value‑hidden alignment 등 진단 지표를 수집합니다.
-- **raw/** – 변경되지 않는 원본 자료 디렉터리. 논문 PDF, 이미지 등이 저장되며, LLM은 이 폴더의 파일을 직접 수정하지 않습니다.
-- **wiki/** – LLM이 관리하는 연구 위키. `index.md`에는 모든 페이지의 카탈로그가, `sources/`에는 논문 요약이, `concepts/`와 `entities/`에는 개념 및 인물 페이지가, `reports/`에는 ChatGPT가 작성한 보고서가 저장됩니다【144892946675469†L6-L19】. 각 위키 페이지는 YAML frontmatter를 가지고 제목, 태그, 출처, 생성/수정일자를 명시합니다.
-- **report.py** – ChatGPT Responses API를 사용해 보고서를 생성하는 스크립트입니다. 위키 내용을 읽어 context로 제공하고, PDF 원본을 벡터 스토어에 업로드해 파일 검색을 사용합니다. `--prompt`로 질문을, `--sources`로 첨부할 원본 파일을 지정합니다.
+raw/
+  내 제안.txt       초기 연구 제안 메모
+  *.pdf            수정하지 않는 원본 논문 파일
 
-- **prompt_draft.md** – QK‑Norm 하에서 어텐션 출력 \(PV\)의 기하학적 적합성을 검토하는 보고서 요청 초안입니다. QK‑Norm이 도입하는 구조적 변화와 잔차 연결의 문제점을 논의하고, \((P-I)V\) 및 그 외 대안을 평가하는 세 가지 질문을 포함합니다.
-- **CLAUDE.md** – 연구 위키의 스키마와 작업 흐름을 정의합니다. `raw/`는 절대 수정하지 않고, 위키 페이지는 YAML frontmatter를 포함하며, ingest→query→report→lint 단계로 운영된다는 규칙을 명시합니다.
-- **llm-wiki.md** – 지속적인 위키 개념을 설명하는 아이디어 문서입니다. RAG 시스템과 달리 LLM이 요약·교차참조를 수행하여 지식이 축적되는 방식을 강조합니다.
+wiki/
+  index.md         위키 목차
+  concepts/        개념별 종합 정리
+  sources/         논문 및 원본 자료 요약
+  reports/         생성/정리된 연구 보고서
 
-## QK‑Norm과 잔차 연결 변형
-
-### QK‑Norm
-
-Causal self‑attention에서 QK‑Norm은 각 헤드의 쿼리와 키를 RMSNorm으로 정규화하여 \(\|q\|=\|k\|=\sqrt{d_{\text{head}}}\)가 되도록 하고, 헤드마다 학습 가능한 온도 \(\tau\)를 곱합니다. 이렇게 하면 스케일을 고정하는 대신 온도가 데이터에 맞게 조정되며, 어텐션 스코어의 분산이 안정됩니다. PVW\(_O\)의 출력은 항상 생성되며 잔차 연결 방식은 블록에서 처리됩니다.
-
-### 잔차 연결 변형
-
-- **Baseline (Pre‑LN)** – 레이어 전에 RMSNorm을 적용하고 어텐션과 MLP 출력을 기존 잔차 스트림에 더합니다. 이는 일반적인 GPT‑2 스타일 구현입니다.
-- **ReZero** – 블록 내부에 RMSNorm을 두지 않고, 잔차 업데이트를 학습 가능한 스칼라 \(\eta\)로 곱해 \(h + \eta\cdot PVW_O\)를 수행합니다. 학습 초기에 \(\eta=0\)으로 시작하여 점진적으로 잔차를 학습합니다.
-- **ReZero + PVH (Mean‑Shift)** – ReZero에 더해 \(h + \eta\cdot (PVW_O - h)\) 형식의 **mean‑shift** 변위를 사용합니다. 이는 $PVW_O - h$가 이동 벡터임을 강조하고, \(\eta=0\)에서 완전 신원 사상(identical mapping)을 보장합니다. Mean‑Shift 변형은 Rigollet의 평균장 동역학에서 제시된 \((P-I)V\) 수정안과 유사한 동기를 가집니다.
-
-세 변형은 `experiment/config.py`에서 `attn_output_mode`를 통해 선택할 수 있습니다: "baseline", "rezero", "rezero_pvh".
-
-### 실험 설정
-
-- **모델 크기** – 기본 설정은 \(d_{\text{model}}=256\), 레이어 4개, 헤드 4개, FFN 차원 1024입니다.
-- **데이터셋** – Wikitext‑103 raw v1을 사용하며 GPT‑2 토크나이저로 토크나이즈합니다. 데이터는 고유 조합별로 `data_cache/`에 저장되고 이후 실행에서 재사용됩니다.
-- **학습 파라미터** – 배치 크기 16, gradient accumulation 4, 학습률 3e‑4, weight decay 0.1, warmup 1000 step, 최대 40k step 등 기본값이 정의되어 있습니다.
-- **학습 스크립트** – `experiment/train.py`는 모델 초기화 후 Cosine annealing 스케줄로 학습하며, `runs/<variant>_seed<seed>/`에 로그(`log.jsonl`)와 체크포인트(`ckpt_*.pt`, `model_final.pt`)를 저장합니다. 각 variant를 모두 실행하려면 `experiment/run_all.py`를 사용할 수 있습니다.
-- **진단 지표** – `metrics.py`는 각 레이어·헤드별 어텐션 엔트로피, 학습 도중 gradient norm, value‑hidden cosine similarity 등을 계산합니다.
-
-## 연구 위키 사용법
-
-이 저장소는 단순 RAG 검색 대신 LLM이 **연구 위키**를 작성·갱신하는 방식을 사용합니다. 핵심 개념은 다음과 같습니다.
-
-1. **원본 자료(raw sources)** – 논문, 보고서, PDF, 이미지 등 변경되지 않는 자료를 `raw/`에 보관합니다.
-2. **위키(wiki)** – LLM이 작성하는 Markdown 페이지 모음입니다. 논문 요약(`sources/`), 개념(`concepts/`), 엔티티(`entities/`), 종합 분석(`synthesis.md`), 보고서(`reports/`) 등이 포함됩니다. 각 페이지는 YAML frontmatter로 제목, 태그, 출처를 명시하고, Obsidian 스타일 `[[링크]]`로 서로 연결합니다【144892946675469†L23-L35】.
-3. **스키마와 워크플로우** – `CLAUDE.md`는 ingest→query→report→lint 순서의 작업 흐름과 위키 작성 규칙을 정의합니다. 또한 수학 수식은 LaTeX로 작성하고, 주장에는 반드시 출처를 남기며, `raw/` 파일은 수정하지 않는다는 규칙을 명시합니다.
-4. **지속적(compounding) 위키** – `llm-wiki.md`는 RAG 시스템과 달리 LLM이 새 자료를 읽고 기존 위키에 통합해 지식이 점진적으로 축적되는 방식을 설명합니다.
-
-위키에는 현재 Geshkovski (2023)와 Rigollet (2024) 논문 요약, QK‑Norm의 기하학적 적합성에 대한 개념 페이지, 관련 연구 제안 등이 포함되어 있습니다. `wiki/index.md`를 열어 전체 목차를 확인할 수 있습니다.
-
-## 보고서 생성 (`report.py`)
-
-`report.py`는 ChatGPT Responses API를 사용하여 연구 보고서를 생성하는 스크립트입니다. 기본 동작은 다음과 같습니다:
-
-1. 위키를 스캔해 관련 내용을 하나의 텍스트로 합칩니다.
-2. 첨부할 원본 파일(PDF 등)을 OpenAI 벡터 스토어에 업로드하여 file search 도구를 사용할 수 있도록 합니다.
-3. 사용자로부터 질문(prompt)과 첨부 파일 목록을 받아 세션을 생성하고, `OPENAI_API_KEY`를 사용해 ChatGPT에 요청합니다.
-4. 결과 보고서는 `wiki/reports/`에 저장되며, 위키에 통합되어 향후 질의에 활용됩니다.
-
-스크립트 사용 예:
-
-```bash
-# .env 파일에 OPENAI_API_KEY를 저장한 후 실행
-uv run python report.py \
-  -p "QK‑Norm 하에서 (P-I)V의 이론적 근거와 실험적 성능을 비교해 주세요." \
-  -s raw/paper1.pdf raw/notes.txt
+report.py          OpenAI Responses API 기반 보고서 생성기
+prompt_draft.md    외부 보고서 생성을 위한 초기 프롬프트 초안
+CLAUDE.md          위키 스키마와 관리 규칙
+llm-wiki.md        지속적 연구 위키 워크플로우 설명
 ```
 
-옵션 `--model`로 모델 이름을, `--max-pages`로 PDF 페이지 수를 제한할 수 있습니다.
+## 구현된 실험 변형
 
-## 설치 및 실행
+모델은 RMSNorm, causal self-attention, QK-Norm, feed-forward block, final RMSNorm, tied token/output embedding을 사용하는 작은 GPT-style decoder입니다.
 
-1. **환경 준비** – Python 3.11 이상을 설치합니다. CUDA 12.8 이상의 GPU를 사용하는 경우 `torch`는 cu128 wheel을 사용합니다.
-2. **의존성 설치** – 프로젝트 루트에서 다음을 실행합니다:
+Attention 모듈은 항상 일반적인 projected attention 출력을 계산합니다.
+
+```text
+Attn(H) = P V W_O
+```
+
+잔차 연결 방식은 [experiment/config.py](/workspace/QKNormE/experiment/config.py)의 `attn_output_mode`로 선택합니다.
+
+### 1. Baseline
+
+표준 Pre-RMSNorm 잔차 업데이트입니다.
+
+```text
+H <- H + Attn(RMSNorm(H))
+H <- H + FFN(RMSNorm(H))
+```
+
+### 2. ReZero
+
+잔차 branch를 0으로 초기화된 learnable scalar로 조절합니다.
+
+```text
+H <- H + eta_attn * Attn(H)
+H <- H + eta_ffn  * FFN(H)
+```
+
+초기에는 identity mapping으로 시작하고, 학습이 진행되며 잔차 branch의 영향이 점진적으로 커집니다.
+
+### 3. ReZero + PVH
+
+Attention 출력을 target으로 보고 현재 hidden state와 보간하는 변형입니다.
+
+```text
+H <- (1 - eta_attn) * H + eta_attn * Attn(H)
+```
+
+동치로 쓰면 다음과 같습니다.
+
+```text
+H <- H + eta_attn * (P V W_O - H)
+```
+
+이 변형은 attention output이 변위가 아니라 target에 가깝다는 가설을 실험하기 위한 최소한의 probe입니다. 엄밀한 Mean-Shift update라고 주장하지 않습니다.
+
+## 설치
+
+Python 3.11 이상을 사용합니다.
 
 ```bash
-# uv 설치 후 권장 사용
 pip install uv
 uv pip install -e .
-
-# 또는 pip 사용
-pip install --upgrade pip
-pip install openai pymupdf python-dotenv torch datasets transformers
 ```
 
-3. **데이터 다운로드 및 학습 실행** – 첫 실행 시 데이터셋을 다운로드하고 토크나이징 캐시를 생성합니다:
+현재 `pyproject.toml`은 `torch`를 CUDA 12.8 wheel index에서 받도록 설정되어 있습니다. CPU-only 환경에서는 CPU용 Torch를 별도로 설치하거나, Torch source 설정을 조정한 뒤 전체 의존성을 설치하는 편이 좋습니다.
+
+학습 스택 전체를 설치하지 않고 PDF나 위키만 가볍게 확인하려면 다음처럼 프로젝트 의존성 동기화를 건너뛸 수 있습니다.
 
 ```bash
-# baseline 변형 학습
-
-uv run python -m experiment.train --variant baseline
-
-# ReZero 학습 (다른 파라미터 변경 가능)
-uv run python -m experiment.train --variant rezero --max-steps 20000 --batch-size 32
+uv run --no-project --with pymupdf python -c "import fitz; print(fitz.__doc__)"
 ```
 
-학습 중의 로그와 체크포인트는 `runs/` 디렉터리에 저장됩니다.
+## 학습 실행
 
-## 프롬프트 초안 참고
+단일 variant 학습:
 
-`prompt_draft.md`는 QK‑Norm 하에서 어텐션 출력 \(PV\)를 그대로 잔차에 더하는 것이 적합한지, 그리고 \((P-I)V\)나 다른 변형이 더 나은지에 대한 보고서 요청 문서입니다. 문서는 QK‑Norm이 $Q$와 $K$를 구면상에 투영하여 가우시안 커널과 동치라는 배경을 설명하고, 잔차 연결을 둘러싼 찬반 논거와 대안을 제시합니다. 연구 보고서를 작성할 때 참고하세요.
+```bash
+uv run python -m experiment.train --variant baseline
+uv run python -m experiment.train --variant rezero
+uv run python -m experiment.train --variant rezero_pvh
+```
 
-## 기여 및 라이선스
+모든 variant 순차 실행:
 
-이 프로젝트는 논문 재현과 이론 연구를 목적으로 한 개인 연구 저장소입니다. 공식 라이선스 파일이 없으며, 학습 결과와 위키 콘텐츠는 연구·교육 목적으로 자유롭게 참고할 수 있습니다. 개선 사항이나 버그 제보는 GitHub Issues를 통해 환영합니다.
+```bash
+uv run python -m experiment.run_all
+```
+
+주요 옵션 예시:
+
+```bash
+uv run python -m experiment.train \
+  --variant rezero_pvh \
+  --max-steps 20000 \
+  --batch-size 16 \
+  --lr 3e-4 \
+  --seed 42
+```
+
+학습 결과는 `runs/<variant>_seed<seed>/`에 저장되며 git에는 포함하지 않습니다.
+
+## 연구 위키
+
+`wiki/`는 단순 검색 인덱스가 아니라 지속적으로 축적되는 연구 노트입니다. 원본 논문은 `wiki/sources/`에 요약하고, 개념적 연결은 `wiki/concepts/`에 통합하며, 긴 분석은 `wiki/reports/`에 저장합니다.
+
+주요 문서:
+
+- [wiki/index.md](/workspace/QKNormE/wiki/index.md): 위키 목차
+- [wiki/concepts/커널해석과_평균이동.md](/workspace/QKNormE/wiki/concepts/커널해석과_평균이동.md): QK-Norm의 kernel 해석과 Mean-Shift 논리
+- [wiki/concepts/PV의_기하학적_적합성.md](/workspace/QKNormE/wiki/concepts/PV의_기하학적_적합성.md): `PV`를 잔차 출력으로 쓰는 것의 기하학적 적합성 검토
+- [wiki/concepts/잔차연결_수정안.md](/workspace/QKNormE/wiki/concepts/잔차연결_수정안.md): `(P-I)V`, `PVW_O-H`, tangent projection, nGPT식 재설계 비교
+- [wiki/reports/최종결론.md](/workspace/QKNormE/wiki/reports/최종결론.md): 초기 제안에서 생략된 전제를 비판적으로 정리한 최종 보고서
+
+## 보고서 생성
+
+[report.py](/workspace/QKNormE/report.py)는 OpenAI Responses API로 연구 보고서를 생성합니다. 로컬 위키 내용을 context로 포함할 수 있고, PDF나 원본 파일을 vector store에 업로드해 file search를 사용할 수 있습니다.
+
+환경변수:
+
+```bash
+export OPENAI_API_KEY=...
+```
+
+실행 예시:
+
+```bash
+uv run python report.py \
+  --wiki \
+  --prompt prompt_draft.md \
+  --sources raw/2512.01868v4.pdf raw/2305.05465v6.pdf
+```
+
+생성된 보고서는 `wiki/reports/`에 저장됩니다.
+
+## 연구 결론
+
+초기 제안은 다음 관찰에서 출발했습니다.
+
+1. QK-Norm은 query와 key vector의 norm을 고정한다.
+2. 고정 반지름 구면 위에서는 inner product attention을 Gaussian RBF 또는 vMF kernel로 다시 쓸 수 있다.
+3. 따라서 attention matrix `P`는 normalized kernel weight matrix로 해석될 수 있다.
+4. Weighted average `PV`는 변위가 아니라 barycentric target처럼 보인다.
+
+이 관찰은 표준 residual output을 `(P-I)V` 같은 차분항으로 바꾸자는 제안으로 이어졌습니다.
+
+최종 분석은 이 직접 결론을 기각합니다. 빠진 전제는 Mean-Shift가 같은 변수를 kernel 생성, 평균 대상, 현재점으로 동시에 사용한다는 점입니다.
+
+```text
+Mean-Shift: target - current = P(X)X - X
+```
+
+실제 Transformer에서는 이 역할들이 분리되어 있습니다.
+
+```text
+q_i = h_i W_Q
+k_j = h_j W_K
+v_j = h_j W_V
+target_i = sum_j P_ij v_j W_O
+current_i = h_i
+```
+
+즉 Gaussian kernel 해석은 Q/K 공간에서 생기고, 평균은 V/O 공간의 feature에 대해 이루어지며, residual update는 H 공간에서 일어납니다. 이 때문에 엄밀한 Mean-Shift 동일시는 깨집니다.
+
+수정된 결론은 다음과 같습니다.
+
+- `(P-I)V`는 일반 Transformer에서 올바른 residual displacement가 아닙니다. 실제 residual state인 `h_i`가 아니라 `v_i`를 빼기 때문입니다.
+- `PVW_O - H`는 hidden-space target-current probe로는 더 낫지만, kernel space, value space, output space, hidden state space가 동일시되지 않는 한 엄밀한 Mean-Shift update는 아닙니다.
+- 문자 그대로의 Mean-Shift 등가를 원하면 `Q=K=V=I`, `W_O=I`, hidden state가 구면 위에 있다는 강한 전제가 필요합니다.
+- 구면 해석을 진지하게 아키텍처에 반영하려면 `(P-I)V`를 국소적으로 끼워 넣는 것보다 nGPT식 full normalization이 더 정합적입니다. 즉 hidden state, block output, embedding, 관련 matrix vector를 같은 구면 구조에 놓고 normalized target-current interpolation을 수행해야 합니다.
+
+따라서 이 프로젝트의 질문은 다음처럼 수정됩니다.
+
+> QK-Norm의 kernel 해석이 단순 분석 도구를 넘어 아키텍처 원리가 되려면, Transformer의 어느 부분까지 공통 기하학적 공간에 강제해야 하는가?
+
+현재 구현된 `rezero_pvh` variant는 이 방향을 탐색하는 최소 실험이지, 이론적으로 완성된 최종 아키텍처가 아닙니다.
